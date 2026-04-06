@@ -1163,6 +1163,11 @@ with st.sidebar:
                     st.error(f"❌ Failed: {str(e)[:80]}")
     else:
         st.success(f"✅ {len(df):,} records loaded from `{os.path.basename(st.session_state.get('csv_path', data_file))}`")
+    
+    # Check if df is empty
+    if df.empty:
+        st.error("❌ Dataset is empty. Please check your Google Drive file or try refreshing.")
+        st.stop()
 
     st.markdown("---")
     st.markdown(
@@ -1172,20 +1177,26 @@ with st.sidebar:
     
     # ONLY filter: Year Range
     all_years = sorted(df["year"].dropna().unique().astype(int).tolist())
-    sel_years = st.select_slider(
-        "Select years",
-        options=all_years,
-        value=(min(all_years), max(all_years)),
-        key="sidebar_year_slider",
-    )
+    
+    # Handle empty dataframe
+    if all_years:
+        sel_years = st.select_slider(
+            "Select years",
+            options=all_years,
+            value=(min(all_years), max(all_years)),
+            key="sidebar_year_slider",
+        )
+    else:
+        sel_years = (2018, 2025)
+        st.warning("⚠️ No year data found in dataset")
     
     # Set defaults for everything else
-    sel_counties = sorted(df["county"].dropna().unique().tolist())
-    all_pt = sorted(df["Property Type"].dropna().unique().tolist())
+    sel_counties = sorted(df["county"].dropna().unique().tolist()) if "county" in df.columns else []
+    all_pt = sorted(df["Property Type"].dropna().unique().tolist()) if "Property Type" in df.columns else []
     sel_pt = all_pt
-    all_bt = sorted(df["Build Type"].dropna().unique().tolist())
+    all_bt = sorted(df["Build Type"].dropna().unique().tolist()) if "Build Type" in df.columns else []
     sel_bt = all_bt
-    all_et = sorted(df["Estate Type"].dropna().unique().tolist())
+    all_et = sorted(df["Estate Type"].dropna().unique().tolist()) if "Estate Type" in df.columns else []
     sel_et = all_et
     sel_towns = []
 
@@ -1215,6 +1226,11 @@ def filt(_df, yrs, cos, pt, bt, et, tw):
 
 with st.spinner("Filtering…"):
     dff = filt(df, sel_years, sel_counties, sel_pt, sel_bt, sel_et, sel_towns)
+
+# Check if filtered data is empty
+if dff.empty:
+    st.error("❌ No data matches your filters. Please check your Google Drive file.")
+    st.stop()
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  HEADER                                                                     ║
