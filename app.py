@@ -705,49 +705,39 @@ DTYPE = {
 @st.cache_data(show_spinner=False, ttl=7200)
 @st.cache_data(show_spinner=False, ttl=86400)
 def load_csv(path: str, pct: int) -> pd.DataFrame:
-    """Load CSV from local file with smart sampling for large files"""
+    """Load CSV from Google Drive - first time downloads, then cached"""
     
+    # Your Google Drive file ID
+    file_id = "1SMm2gxjyHaZhA52rWalZ3JFU8-20Xv9B"
+    # Use the correct direct download URL format
+    url = f"https://drive.google.com/uc?id={file_id}&export=download"
+    
+    local_file = "merged_pp.csv"
+    
+    # Download if not already cached
+    if not os.path.exists(local_file):
+        try:
+            with st.spinner("📥 Downloading dataset from Google Drive (first time only, 2-3 min)..."):
+                import urllib.request
+                import gdown
+                try:
+                    # Try gdown first (better for large files)
+                    gdown.download(f"https://drive.google.com/uc?id={file_id}", local_file, quiet=False)
+                except:
+                    # Fallback to urllib
+                    urllib.request.urlretrieve(url, local_file)
+                st.success("✅ Dataset downloaded and cached!")
+        except Exception as e:
+            st.error(f"❌ Failed to download: {e}")
+            st.info("Make sure the Google Drive file is shared publicly and contains data")
+            return pd.DataFrame()
+    
+    # Load the CSV
     try:
-        # For large files, use sampling to avoid memory issues
-        file_size_mb = os.path.getsize(path) / (1024 * 1024)
-        
-        if file_size_mb > 500:  # If file > 500MB, use sampling
-            st.info(f"📦 Large file detected ({file_size_mb:.0f}MB) - loading {pct}% of data for performance")
-            
-            # Count total lines
-            with open(path, "rb") as f:
-                total = sum(1 for _ in f) - 1
-            
-            # Calculate which rows to skip
-            keep_n = max(int(total * pct / 100), 10_000)
-            skip = (
-                set(random.sample(range(1, total + 1), total - keep_n))
-                if keep_n < total
-                else set()
-            )
-            
-            df = pd.read_csv(
-                path,
-                skiprows=lambda i: i in skip,
-                low_memory=True,
-                on_bad_lines="skip",
-            )
-        else:
-            # For smaller files, load normally
-            df = pd.read_csv(
-                path,
-                low_memory=True,
-                on_bad_lines="skip",
-            )
-        
-        df.columns = [c.lower().strip() for c in df.columns]
-        return _clean(df)
-        
-    except Exception as e:
-        st.error(f"Error loading {path}: {str(e)[:50]}")
+        with open(local_file, "rb") as f:
+            total = sum(1 for _ in f) - 1
+    except:
         return pd.DataFrame()
-    
-    return pd.DataFrame()
     
     keep_n = max(int(total * pct / 100), 5_000)
     skip = (
@@ -1111,56 +1101,109 @@ with st.sidebar:
     refresh = st.button("🔄 Load / Refresh Data", use_container_width=True, key="sidebar_refresh_btn")
 
     if "df" not in st.session_state or refresh:
-        # Just load demo data
-        st.session_state["df"] = make_demo()
-        st.session_state["is_demo"] = True
+        # Try local file first
+        found = None
+        candidates = [
+            data_file,
+            os.path.join(os.getcwd(), data_file),
+            os.path.join("data", data_file),
+            os.path.join(os.path.expanduser("~"), "Downloads", data_file),
+        ]
+        
+        for p in candidates:
+            if os.path.isfile(p):
+                found = os.path.abspath(p)
+                st.session_state["csv_path"] = found
+                break
+        
+        # If local file found, load it
+        if found:
+            with st.spinner(f"Loading dataset…"):
+                try:
+                    st.session_state["df"] = load_csv(found, 100)
+                    st.session_state["is_demo"] = False
+                except Exception as e:
+                    # If local load fails, try Google Drive
+                    with st.spinner("Downloading from Google Drive…"):
+                        try:
+                            st.session_state["df"] = load_csv("https://drive.google.com/uc?export=download&id=1SMm2gxjyHaZhA52rWalZ3JFU8-20Xv9B", 100)
+                            st.session_state["is_demo"] = False
+                        except:
+                            st.session_state["df"] = make_demo()
+                            st.session_state["is_demo"] = True
+        else:
+            # No local file - auto-download from Google Drive silently
+            with st.spinner("📥 Loading dataset from cloud…"):
+                try:
+                    st.session_state["df"] = load_csv("https://drive.google.com/uc?export=download&id=1SMm2gxjyHaZhA52rWalZ3JFU8-20Xv9B", 100)
+                    st.session_state["is_demo"] = False
+                except Exception as e:
+                    # Only show demo if Google Drive fails
+                    st.session_state["df"] = make_demo()
+                    st.session_state["is_demo"] = True
 
     df = st.session_state["df"]
     is_demo = st.session_state.get("is_demo", True)
 
     if is_demo:
-        st.info("""
-        📊 **Currently showing demo data** (250k sample transactions)
-        
-        **To load your real data:**
-        👇 Upload your CSV file below (supports files up to 200MB)
-        """)
-        
-        # FILE UPLOAD
-        uploaded_file = st.file_uploader(
-            "📁 Upload your merged_pp.csv", 
-            type="csv",
-            key="csv_upload_main"
+        st.warning(
+            f"""
+            ⚠️ **Demo Mode** — Could not load data from Google Drive
+            
+            Using sample data (250k transactions) for now.
+            
+            **To fix:**
+            1. Check your internet connection
+            2. Make sure Google Drive file is publicly shared
+            3. Click "Load / Refresh Data" button above
+            """
         )
         
-        if uploaded_file:
-            file_size_mb = uploaded_file.size / (1024 * 1024)
-            st.warning(f"⏳ Loading {file_size_mb:.1f}MB file... This may take a minute")
-            
-            with st.spinner(f"Processing {file_size_mb:.1f}MB file…"):
+        # Retry button
+        if st.button("🔄 Retry Loading Data", use_container_width=True, key="gdrive_retry"):
+            with st.spinner("Retrying…"):
                 try:
-                    # For large files, read with chunks and low memory
-                    upload_df = pd.read_csv(
-                        uploaded_file,
-                        low_memory=True,
-                        on_bad_lines="skip",
-                        dtype_backend='numpy_nullable'
-                    )
-                    
-                    upload_df.columns = [c.lower().strip() for c in upload_df.columns]
-                    st.session_state["df"] = _clean(upload_df)
-                    st.session_state["is_demo"] = False
-                    df = st.session_state["df"]
-                    st.success(f"✅ Loaded {len(df):,} records from {file_size_mb:.1f}MB file!")
-                    st.rerun()
+                    google_drive_df = load_csv("https://drive.google.com/uc?export=download&id=1SMm2gxjyHaZhA52rWalZ3JFU8-20Xv9B", 100)
+                    if not google_drive_df.empty:
+                        st.session_state["df"] = google_drive_df
+                        st.session_state["is_demo"] = False
+                        st.success("✅ Data loaded!")
+                        st.rerun()
                 except Exception as e:
-                    st.error(f"❌ Error: {str(e)[:100]}")
+                    st.error(f"❌ Failed: {str(e)[:80]}")
     else:
-        st.success(f"✅ {len(df):,} records loaded")
+        st.success(f"✅ {len(df):,} records loaded from `{os.path.basename(st.session_state.get('csv_path', data_file))}`")
     
     # Check if df is empty
     if df.empty:
-        st.warning("⚠️ **Dataset is empty - upload a CSV to get started!**")
+        st.warning("""
+        ⚠️ **Dataset is empty or failed to load from Google Drive**
+        
+        **Option 1: Re-check Google Drive**
+        - Make sure file is publicly shared (not just link-shared)
+        - File must contain actual data rows
+        
+        **Option 2: Upload your CSV here**
+        """)
+        
+        # Allow manual upload
+        uploaded_file = st.file_uploader("📁 Upload merged_pp.csv", type="csv", key="manual_csv_upload")
+        if uploaded_file:
+            with st.spinner("Loading uploaded file…"):
+                try:
+                    uploaded_df = pd.read_csv(uploaded_file)
+                    uploaded_df.columns = [c.lower().strip() for c in uploaded_df.columns]
+                    st.session_state["df"] = _clean(uploaded_df)
+                    st.success("✅ File uploaded successfully!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to load: {str(e)[:80]}")
+        
+        # Show demo data as fallback
+        st.info("Using demo data (250k sample transactions) - Click 'Load / Refresh Data' to retry")
+        df = make_demo()
+        st.session_state["df"] = df
+        st.session_state["is_demo"] = True
 
     st.markdown("---")
     st.markdown(
@@ -1169,7 +1212,7 @@ with st.sidebar:
     )
     
     # ONLY filter: Year Range
-    all_years = sorted(df["year"].dropna().unique().astype(int).tolist()) if "year" in df.columns else []
+    all_years = sorted(df["year"].dropna().unique().astype(int).tolist())
     
     # Handle empty dataframe
     if all_years:
