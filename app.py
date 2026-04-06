@@ -736,28 +736,83 @@ def load_csv(path: str, pct: int) -> pd.DataFrame:
         else set()
     )
     
-    df = pd.read_csv(
-        local_file,
-        usecols=lambda c: c.lower().strip() in [x.lower() for x in COLS],
-        dtype=DTYPE,
-        parse_dates=["deed_date"],
-        skiprows=lambda i: i in skip,
-        low_memory=True,
-        on_bad_lines="skip",
-    )
+    try:
+        df = pd.read_csv(
+            local_file,
+            usecols=lambda c: c.lower().strip() in [x.lower() for x in COLS],
+            dtype=DTYPE,
+            parse_dates=[],  # Don't parse dates during read, do it after
+            skiprows=lambda i: i in skip,
+            low_memory=True,
+            on_bad_lines="skip",
+        )
+    except:
+        # If selective column loading fails, load everything
+        df = pd.read_csv(
+            local_file,
+            skiprows=lambda i: i in skip,
+            low_memory=True,
+            on_bad_lines="skip",
+        )
     
     df.columns = [c.lower().strip() for c in df.columns]
+    
+    # Convert date column if it exists (try multiple names)
+    date_cols = [col for col in df.columns if 'date' in col.lower()]
+    if date_cols:
+        df[date_cols[0]] = pd.to_datetime(df[date_cols[0]], errors='coerce')
+    
     return _clean(df)
 
 
 def _clean(df: pd.DataFrame) -> pd.DataFrame:
     """Clean and enrich data."""
-    df = df.dropna(subset=["price_paid", "deed_date", "county"])
-    df["price_paid"] = pd.to_numeric(df["price_paid"], errors="coerce")
-    df = df[df["price_paid"].between(10_000, 10_000_000)].copy()
-    df["year"] = df["deed_date"].dt.year.astype("int16")
-    df["month"] = df["deed_date"].dt.month.astype("int8")
-    df["month_name"] = df["deed_date"].dt.strftime("%B")
+    
+    # Find the date column (might be deed_date, transaction_date, date, etc)
+    date_col = None
+    for col in df.columns:
+        if 'date' in col.lower():
+            date_col = col
+            break
+    
+    # Find required columns
+    price_col = None
+    county_col = None
+    for col in df.columns:
+        if 'price' in col.lower():
+            price_col = col
+        if 'county' in col.lower():
+            county_col = col
+    
+    # Use defaults if not found
+    if not price_col:
+        price_col = 'price_paid'
+    if not county_col:
+        county_col = 'county'
+    if not date_col:
+        date_col = 'deed_date'
+    
+    # Only drop rows if columns exist
+    cols_to_check = [col for col in [price_col, date_col, county_col] if col in df.columns]
+    if cols_to_check:
+        df = df.dropna(subset=cols_to_check)
+    
+    # Clean price
+    if price_col in df.columns:
+        df[price_col] = pd.to_numeric(df[price_col], errors="coerce")
+        df = df[df[price_col].between(10_000, 10_000_000)].copy()
+    
+    # Clean date
+    if date_col in df.columns:
+        df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+        df["year"] = df[date_col].dt.year.astype("int16")
+        df["month"] = df[date_col].dt.month.astype("int8")
+        df["month_name"] = df[date_col].dt.strftime("%B")
+    else:
+        # Create dummy year/month if no date column
+        df["year"] = 2020
+        df["month"] = 1
+        df["month_name"] = "January"
 
     # Map property attributes to readable names
     if "property_type" in df.columns:
@@ -772,19 +827,18 @@ def _clean(df: pd.DataFrame) -> pd.DataFrame:
         nb_map = {"Y": "New Build", "N": "Existing"}
         df["Build Type"] = df["new_build"].map(nb_map).fillna("Existing")
 
-    # Clean county names - extract actual county (before comma if exists)
-    df["county"] = df["county"].astype(str).str.strip()
-    df["county"] = df["county"].str.split(",").str[0].str.strip()
-    df["county"] = df["county"].str.upper()
+    # Clean county names
+    if county_col in df.columns:
+        df[county_col] = df[county_col].astype(str).str.strip()
+        df[county_col] = df[county_col].str.split(",").str[0].str.strip()
+        df[county_col] = df[county_col].str.upper()
+        df = df[df[county_col].notna() & (df[county_col] != "NONE") & (df[county_col] != "")].copy()
+        df[county_col] = df[county_col].astype("category")
     
-    # DON'T filter - accept all counties! Just remove nulls
-    df = df[df["county"].notna() & (df["county"] != "NONE") & (df["county"] != "")].copy()
+    if "town" in df.columns:
+        df["town"] = df["town"].astype(str).str.upper().str.strip()
+        df["town"] = df["town"].astype("category")
     
-    df["town"] = df["town"].astype(str).str.upper().str.strip()
-    
-    # Now safe to convert to category
-    df["county"] = df["county"].astype("category")
-    df["town"] = df["town"].astype("category")
     df["month_name"] = df["month_name"].astype("category")
     
     # Convert new columns to category
@@ -1037,39 +1091,46 @@ with st.sidebar:
     refresh = st.button("🔄 Load / Refresh Data", use_container_width=True, key="sidebar_refresh_btn")
 
     if "df" not in st.session_state or refresh:
-        # Try multiple locations for the CSV file
+        # Try local file first
+        found = None
         candidates = [
             data_file,
-            os.path.join(os.getcwd(), data_file),  # Current working directory
-            os.path.join(os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else ".", data_file),
+            os.path.join(os.getcwd(), data_file),
             os.path.join("data", data_file),
-            os.path.join("..", data_file),
-            os.path.join(os.path.expanduser("~"), "Downloads", data_file),  # Downloads folder
+            os.path.join(os.path.expanduser("~"), "Downloads", data_file),
         ]
         
-        # Also try without .csv extension if user typed it wrong
-        if not data_file.endswith(".csv"):
-            candidates.append(data_file + ".csv")
-        
-        found = None
         for p in candidates:
             if os.path.isfile(p):
                 found = os.path.abspath(p)
                 st.session_state["csv_path"] = found
                 break
         
+        # If local file found, load it
         if found:
-            with st.spinner(f"Loading full dataset…"):
+            with st.spinner(f"Loading dataset…"):
                 try:
-                    st.session_state["df"] = load_csv(found, 100)  # Load 100% of data
+                    st.session_state["df"] = load_csv(found, 100)
                     st.session_state["is_demo"] = False
                 except Exception as e:
-                    st.error(f"❌ Load error: {str(e)[:100]}")
+                    # If local load fails, try Google Drive
+                    with st.spinner("Downloading from Google Drive…"):
+                        try:
+                            st.session_state["df"] = load_csv("https://drive.google.com/uc?export=download&id=1SMm2gxjyHaZhA52rWalZ3JFU8-20Xv9B", 100)
+                            st.session_state["is_demo"] = False
+                        except:
+                            st.session_state["df"] = make_demo()
+                            st.session_state["is_demo"] = True
+        else:
+            # No local file - auto-download from Google Drive silently
+            with st.spinner("📥 Loading dataset from cloud…"):
+                try:
+                    st.session_state["df"] = load_csv("https://drive.google.com/uc?export=download&id=1SMm2gxjyHaZhA52rWalZ3JFU8-20Xv9B", 100)
+                    st.session_state["is_demo"] = False
+                except Exception as e:
+                    # Only show demo if Google Drive fails
                     st.session_state["df"] = make_demo()
                     st.session_state["is_demo"] = True
-        else:
-            st.session_state["df"] = make_demo()
-            st.session_state["is_demo"] = True
 
     df = st.session_state["df"]
     is_demo = st.session_state.get("is_demo", True)
@@ -1077,32 +1138,29 @@ with st.sidebar:
     if is_demo:
         st.warning(
             f"""
-            ⚠️ **DEMO MODE** — `{data_file}` not found.
+            ⚠️ **Demo Mode** — Could not load data from Google Drive
             
-            **Downloading your actual data from Google Drive...**
-            (First load takes 2-3 minutes, then it's cached)
+            Using sample data (250k transactions) for now.
             
-            If this doesn't work:
-            1. Make sure your Google Drive file is shared publicly
-            2. Check your internet connection
+            **To fix:**
+            1. Check your internet connection
+            2. Make sure Google Drive file is publicly shared
             3. Click "Load / Refresh Data" button above
-            
-            Using demo data (250k sample transactions) for now.
             """
         )
         
-        # Auto-try to load from Google Drive
-        if st.button("📥 Download from Google Drive", use_container_width=True, key="gdrive_btn"):
-            with st.spinner("Downloading from Google Drive (2-3 min)..."):
+        # Retry button
+        if st.button("🔄 Retry Loading Data", use_container_width=True, key="gdrive_retry"):
+            with st.spinner("Retrying…"):
                 try:
                     google_drive_df = load_csv("https://drive.google.com/uc?export=download&id=1SMm2gxjyHaZhA52rWalZ3JFU8-20Xv9B", 100)
                     if not google_drive_df.empty:
                         st.session_state["df"] = google_drive_df
                         st.session_state["is_demo"] = False
-                        st.success("✅ Data loaded from Google Drive!")
+                        st.success("✅ Data loaded!")
                         st.rerun()
                 except Exception as e:
-                    st.error(f"❌ Failed: {str(e)[:100]}")
+                    st.error(f"❌ Failed: {str(e)[:80]}")
     else:
         st.success(f"✅ {len(df):,} records loaded from `{os.path.basename(st.session_state.get('csv_path', data_file))}`")
 
