@@ -709,7 +709,8 @@ def load_csv(path: str, pct: int) -> pd.DataFrame:
     
     # Your Google Drive file ID
     file_id = "1SMm2gxjyHaZhA52rWalZ3JFU8-20Xv9B"
-    url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    # Use the correct direct download URL format
+    url = f"https://drive.google.com/uc?id={file_id}&export=download"
     
     local_file = "merged_pp.csv"
     
@@ -718,16 +719,25 @@ def load_csv(path: str, pct: int) -> pd.DataFrame:
         try:
             with st.spinner("📥 Downloading dataset from Google Drive (first time only, 2-3 min)..."):
                 import urllib.request
-                urllib.request.urlretrieve(url, local_file)
+                import gdown
+                try:
+                    # Try gdown first (better for large files)
+                    gdown.download(f"https://drive.google.com/uc?id={file_id}", local_file, quiet=False)
+                except:
+                    # Fallback to urllib
+                    urllib.request.urlretrieve(url, local_file)
                 st.success("✅ Dataset downloaded and cached!")
         except Exception as e:
             st.error(f"❌ Failed to download: {e}")
-            st.info("Make sure the Google Drive file is shared publicly")
+            st.info("Make sure the Google Drive file is shared publicly and contains data")
             return pd.DataFrame()
     
     # Load the CSV
-    with open(local_file, "rb") as f:
-        total = sum(1 for _ in f) - 1
+    try:
+        with open(local_file, "rb") as f:
+            total = sum(1 for _ in f) - 1
+    except:
+        return pd.DataFrame()
     
     keep_n = max(int(total * pct / 100), 5_000)
     skip = (
@@ -1166,8 +1176,34 @@ with st.sidebar:
     
     # Check if df is empty
     if df.empty:
-        st.error("❌ Dataset is empty. Please check your Google Drive file or try refreshing.")
-        st.stop()
+        st.warning("""
+        ⚠️ **Dataset is empty or failed to load from Google Drive**
+        
+        **Option 1: Re-check Google Drive**
+        - Make sure file is publicly shared (not just link-shared)
+        - File must contain actual data rows
+        
+        **Option 2: Upload your CSV here**
+        """)
+        
+        # Allow manual upload
+        uploaded_file = st.file_uploader("📁 Upload merged_pp.csv", type="csv", key="manual_csv_upload")
+        if uploaded_file:
+            with st.spinner("Loading uploaded file…"):
+                try:
+                    uploaded_df = pd.read_csv(uploaded_file)
+                    uploaded_df.columns = [c.lower().strip() for c in uploaded_df.columns]
+                    st.session_state["df"] = _clean(uploaded_df)
+                    st.success("✅ File uploaded successfully!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to load: {str(e)[:80]}")
+        
+        # Show demo data as fallback
+        st.info("Using demo data (250k sample transactions) - Click 'Load / Refresh Data' to retry")
+        df = make_demo()
+        st.session_state["df"] = df
+        st.session_state["is_demo"] = True
 
     st.markdown("---")
     st.markdown(
