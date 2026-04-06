@@ -1079,19 +1079,30 @@ with st.sidebar:
             f"""
             ⚠️ **DEMO MODE** — `{data_file}` not found.
             
-            **To load your actual data:**
-            1. Place `merged_pp.csv` in the **same folder** as this app.py script
-            2. Or paste the full file path in the box above
-            3. Click the "Load / Refresh Data" button
+            **Downloading your actual data from Google Drive...**
+            (First load takes 2-3 minutes, then it's cached)
             
-            **File location tips:**
-            - Windows: Usually `C:\\Users\\YourName\\Downloads\\merged_pp.csv`
-            - Mac: Usually `/Users/YourName/Downloads/merged_pp.csv`
-            - Linux: Usually `/home/username/Downloads/merged_pp.csv`
+            If this doesn't work:
+            1. Make sure your Google Drive file is shared publicly
+            2. Check your internet connection
+            3. Click "Load / Refresh Data" button above
             
             Using demo data (250k sample transactions) for now.
             """
         )
+        
+        # Auto-try to load from Google Drive
+        if st.button("📥 Download from Google Drive", use_container_width=True, key="gdrive_btn"):
+            with st.spinner("Downloading from Google Drive (2-3 min)..."):
+                try:
+                    google_drive_df = load_csv("https://drive.google.com/uc?export=download&id=1SMm2gxjyHaZhA52rWalZ3JFU8-20Xv9B", 100)
+                    if not google_drive_df.empty:
+                        st.session_state["df"] = google_drive_df
+                        st.session_state["is_demo"] = False
+                        st.success("✅ Data loaded from Google Drive!")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Failed: {str(e)[:100]}")
     else:
         st.success(f"✅ {len(df):,} records loaded from `{os.path.basename(st.session_state.get('csv_path', data_file))}`")
 
